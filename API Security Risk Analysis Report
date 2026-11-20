@@ -1,0 +1,253 @@
+# API Security Risk Analysis Report
+
+**Prepared By:** [Your Name]
+**Date:** November 20, 2026
+**Target:** OWASP crAPI (Completely Ridiculous API), a deliberately vulnerable API for security training
+**Tools:** Postman, Browser DevTools, OWASP crAPI as a test environment
+**Classification:** Internal / Educational
+
+> **Important:** This report is based on the known security weaknesses of the crAPI training application and the test methodology described below. Before submission, verify each finding by running the listed Postman steps against your own local instance and replace the "Evidence" notes with your actual screenshots and responses.
+
+---
+
+## 1. Executive Summary
+
+APIs connect mobile apps, websites, partners, and internal systems. When APIs are poorly secured, they can expose customer data, allow account takeover, and let attackers abuse services at scale.
+
+This analysis reviewed a sample API for common risks listed in the OWASP API Security Top 10. **Seven findings were identified: 3 High, 3 Medium, and 1 Low.** The most serious issues allow one user to access another user's data, and allow access to records and functions that should be restricted.
+
+**Priority recommendation:** Fix authorization checks on every object request (F-01 and F-02) within 7 days. These controls prevent the largest data exposure risk.
+
+| Risk Level | Count |
+|------------|-------|
+| High       | 3     |
+| Medium     | 3     |
+| Low        | 1     |
+
+---
+
+## 2. Scope and Objectives
+
+**In scope:**
+- Authentication endpoints (login, token issue)
+- User profile and vehicle/resource endpoints
+- Contact and order-related endpoints
+- Community/forum endpoints
+
+**Out of scope:** Denial-of-service testing, testing against systems without permission, and any production environment.
+
+**Objectives:**
+- Identify insecure endpoints and data exposure risks
+- Analyze authentication and authorization (tokens, keys, access control)
+- Detect missing rate limiting and input validation gaps
+- Explain risks in business-friendly language
+- Recommend practical remediation
+
+---
+
+## 3. Methodology
+
+1. **API inventory:** Use Postman to import or manually record endpoints, methods, parameters, and required headers.
+2. **Traffic review:** Use Browser DevTools (Network tab) to capture real requests and responses during normal use.
+3. **Authentication review:** Inspect tokens (JWT structure, expiry, storage location) and test requests with missing, expired, or altered tokens.
+4. **Authorization testing:** Use one user's token to request another user's object IDs, and compare responses.
+5. **Input and rate testing:** Send repeated requests and malformed input to check for limits and validation.
+6. **Risk rating:** Score each finding by likelihood and business impact.
+
+**Risk Rating Criteria:**
+
+| Rating | Meaning |
+|--------|---------|
+| **High** | Easy to exploit; could expose other users' data or allow account takeover |
+| **Medium** | Exploitable under some conditions; weakens security or exposes limited data |
+| **Low** | Minor weakness with limited direct impact |
+
+---
+
+## 4. API Inventory (Sample)
+
+| Endpoint | Method | Auth Required | Purpose | Notes |
+|----------|--------|---------------|---------|-------|
+| `/identity/api/auth/login` | POST | No | Issue access token | Entry point for all user sessions |
+| `/identity/api/v2/user/dashboard` | GET | Yes | Show user profile | Returns user data |
+| `/identity/api/v2/vehicle/{vehicleId}/location` | GET | Yes | Show vehicle location | Object ID in path |
+| `/identity/api/v2/user/change-email` | POST | Yes | Change account email | Sensitive action |
+| `/community/api/v2/community/posts/{postId}` | GET | Yes | Read a post | Object ID in path |
+| `/workshop/api/shop/orders/{orderId}` | GET | Yes | View order details | Object ID in path |
+
+---
+
+## 5. Findings Summary
+
+| ID | Finding | OWASP API Top 10 | Risk | Status |
+|----|---------|------------------|------|--------|
+| F-01 | Broken Object Level Authorization (BOLA) on vehicle location | API1:2023 | High | Open |
+| F-02 | Broken Object Level Authorization on orders | API1:2023 | High | Open |
+| F-03 | Weak authentication token handling | API2:2023 | High | Open |
+| F-04 | Excessive data exposure in API responses | API3:2023 | Medium | Open |
+| F-05 | No rate limiting on login and OTP-style endpoints | API4:2023 | Medium | Open |
+| F-06 | Mass assignment on profile update | API6:2023 | Medium | Open |
+| F-07 | Verbose error responses and unnecessary HTTP methods | API8:2023 | Low | Open |
+
+---
+
+## 6. Detailed Findings
+
+### F-01: Broken Object Level Authorization (BOLA) on Vehicle Location
+
+- **Risk:** High
+- **Endpoint:** `GET /identity/api/v2/vehicle/{vehicleId}/location`
+- **Description:** The API returns vehicle location data based on the vehicle ID in the URL. It does not confirm that the authenticated user owns that vehicle.
+- **Test Steps (Postman):**
+  1. Log in as User A and copy the access token.
+  2. Request your own vehicle location and note the vehicle ID.
+  3. Replace the vehicle ID with one belonging to User B and send the request using User A's token.
+- **Expected Result:** `403 Forbidden` or `404 Not Found`
+- **Observed Result (to be confirmed):** Location data for User B's vehicle is returned.
+- **Business Impact:** Any logged-in user could track other customers' vehicles. This is a serious privacy violation and may breach data protection regulations.
+- **Remediation:**
+  - Check ownership on the server for every request: confirm that the vehicle belongs to the authenticated user.
+  - Use indirect identifiers (such as random UUIDs) so IDs are harder to guess.
+  - Add automated authorization tests to the CI/CD pipeline.
+
+### F-02: Broken Object Level Authorization on Orders
+
+- **Risk:** High
+- **Endpoint:** `GET /workshop/api/shop/orders/{orderId}`
+- **Description:** Order details can be retrieved by changing the order ID, even when the order belongs to another customer.
+- **Test Steps:** Same method as F-01: use User A's token with User B's order ID.
+- **Expected Result:** Access denied.
+- **Observed Result (to be confirmed):** Order details, including shipping address and items, are returned.
+- **Business Impact:** Exposes customer names, addresses, and purchase history. Attackers can enumerate sequential order IDs to harvest data at scale.
+- **Remediation:**
+  - Enforce ownership checks in the data access layer, not only in the UI.
+  - Avoid sequential IDs. Use UUIDs.
+  - Log and alert on repeated access to objects the user does not own.
+
+### F-03: Weak Authentication Token Handling
+
+- **Risk:** High
+- **Endpoint:** Token issued by `/identity/api/auth/login`
+- **Description:** Tokens may have long lifetimes, may not be invalidated on logout, and may be accepted after password change. Some tokens use weak signing or contain more data than needed.
+- **Test Steps (DevTools and Postman):**
+  1. Decode the JWT at jwt.io (header and payload only, never paste production tokens into public sites).
+  2. Check the `exp` (expiry) claim. Note how long the token stays valid.
+  3. Log out, then reuse the old token. Confirm whether it still works.
+  4. Change the token's payload slightly and resend. Confirm the server rejects it.
+- **Expected Result:** Short expiry, token rejected after logout, altered tokens rejected.
+- **Business Impact:** A stolen token (from a device, log file, or network interception) could give an attacker long-term access to the account.
+- **Remediation:**
+  - Use short-lived access tokens (for example, 15 minutes) with refresh token rotation.
+  - Invalidate tokens on logout and password change.
+  - Verify signatures using a strong algorithm (RS256 or ES256). Reject `alg: none`.
+  - Never store tokens in URLs or logs.
+
+### F-04: Excessive Data Exposure in API Responses
+
+- **Risk:** Medium
+- **Endpoint:** `GET /identity/api/v2/user/dashboard`
+- **Description:** The response includes more fields than the screen needs, such as internal IDs, role flags, and contact details that are not displayed in the app.
+- **Test Steps:** Compare the JSON response in DevTools with the fields displayed in the app UI.
+- **Business Impact:** The front end can hide data, but anyone who calls the API directly can see it. Extra fields help attackers understand the system.
+- **Remediation:**
+  - Return only the fields each client needs (use response DTOs or field allow-lists).
+  - Review responses during code review and before each release.
+
+### F-05: No Rate Limiting on Login and Verification Endpoints
+
+- **Risk:** Medium
+- **Endpoint:** `/identity/api/auth/login` and any OTP or verification endpoint
+- **Description:** Repeated requests are accepted without limits, delays, or lockouts.
+- **Test Steps:** In Postman, use the Collection Runner to send 100 login requests with different passwords in quick succession. Note whether responses change, slow down, or block.
+- **Business Impact:** Enables brute-force password guessing and OTP guessing. Also allows resource exhaustion and higher cloud costs.
+- **Remediation:**
+  - Apply rate limits per user, per IP, and per endpoint (for example, 5 attempts per 15 minutes on login).
+  - Return `429 Too Many Requests` with a `Retry-After` header.
+  - Use CAPTCHA or temporary lockout after repeated failures.
+  - Expire OTPs quickly and limit attempts.
+
+### F-06: Mass Assignment on Profile Update
+
+- **Risk:** Medium
+- **Endpoint:** `POST /identity/api/v2/user/change-email` and profile update endpoints
+- **Description:** The API accepts extra fields in the request body that the app does not normally send. These may be saved, such as a `role` or `isAdmin` field.
+- **Test Steps:** Send a normal request, then add an extra field such as `"role": "admin"` in the JSON body. Check whether the change is saved using a follow-up GET request.
+- **Business Impact:** A regular user could gain administrative privileges.
+- **Remediation:**
+  - Use an allow-list of fields that can be updated.
+  - Reject unknown fields with `400 Bad Request`.
+  - Keep privileged fields (role, permissions, balance) out of user-editable models.
+
+### F-07: Verbose Errors and Unnecessary HTTP Methods
+
+- **Risk:** Low
+- **Endpoints:** Multiple
+- **Description:** Error responses include stack traces or internal details. Some endpoints accept methods not needed for their purpose (for example, `PUT` or `DELETE` on read-only resources).
+- **Test Steps:** Send malformed JSON and an unsupported method (for example, `DELETE` on a GET endpoint). Note the error body and status code.
+- **Business Impact:** Helps attackers understand the framework and plan targeted attacks.
+- **Remediation:**
+  - Return generic error messages with a reference ID. Log details server-side.
+  - Allow only required HTTP methods per endpoint and return `405 Method Not Allowed` otherwise.
+
+---
+
+## 7. Remediation Roadmap
+
+| Priority | Timeframe | Action | Findings |
+|----------|-----------|--------|----------|
+| 1 | 0–7 days | Enforce object-level authorization; fix token lifetime and logout invalidation | F-01, F-02, F-03 |
+| 2 | 7–30 days | Add rate limiting; restrict response fields; apply field allow-lists | F-04, F-05, F-06 |
+| 3 | 30–60 days | Standardize error handling; restrict HTTP methods | F-07 |
+| Ongoing | Continuous | API security tests in CI/CD; quarterly review against OWASP API Top 10 | All |
+
+---
+
+## 8. Business Impact Summary
+
+| Risk Area | Potential Business Consequence |
+|-----------|--------------------------------|
+| Authorization gaps (F-01, F-02) | Customer privacy breach, regulatory fines, loss of trust |
+| Token weaknesses (F-03) | Account takeover, fraud |
+| Data exposure (F-04) | Larger breach impact, unnecessary data sharing |
+| Rate limiting gaps (F-05) | Password attacks, service abuse, higher cloud bills |
+| Mass assignment (F-06) | Privilege escalation, unauthorized changes |
+| Error handling (F-07) | Easier attacker reconnaissance |
+
+---
+
+## 9. Limitations
+
+- This analysis is based on a training API. Production APIs may differ in design and controls.
+- Test results should be confirmed by running the listed Postman steps. Automated tools may produce false positives.
+- Only test APIs you own or have written permission to test.
+
+---
+
+## 10. Conclusion
+
+Most API risks come from a small number of mistakes: checking that a user is logged in but not checking whether they are allowed to access a specific object, trusting client input, and returning more data than necessary. Fixing authorization checks and limiting data exposure gives the largest security improvement for the effort required.
+
+---
+
+## Appendix A: Postman Test Checklist
+
+- [ ] Import or create the collection and set an environment variable for the token
+- [ ] Log in as two different users and save both tokens
+- [ ] Run BOLA test (F-01, F-02) with User A's token on User B's object IDs
+- [ ] Decode JWT and check expiry (F-03)
+- [ ] Test token reuse after logout (F-03)
+- [ ] Compare API response fields with UI fields (F-04)
+- [ ] Run Collection Runner with 100 login attempts (F-05)
+- [ ] Send extra fields in update request (F-06)
+- [ ] Send malformed JSON and wrong HTTP method (F-07)
+- [ ] Save screenshots of each request and response as evidence
+
+## Appendix B: Security Terms (Plain Language)
+
+| Term | Simple Meaning |
+|------|----------------|
+| Authentication | Proving who you are (login) |
+| Authorization | Checking what you are allowed to access |
+| Token | A digital pass that proves you are logged in |
+| Rate limiting | Restricting how many requests one user can make in a time period |
+| Mass assignment | Accidentally letting users change fields they should not control |
